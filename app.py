@@ -14,7 +14,7 @@ import os
 st.set_page_config(
     page_title="Metabolomics Tiered Merger", 
     layout="wide", 
-    page_icon="🧬",
+    page_icon="⚗️🦠",
     menu_items={
         'Report a bug': "mailto:your_email@example.com",
         'About': "# Tiered merging tool for FBMN, SIRIUS, MolDiscovery, and Dereplicator+."
@@ -286,8 +286,43 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         status.update(label="✅ Complete!", state="complete", expanded=False)
 
     # --- FINAL EXPORT ---
-    st.success(f"🎉 Annotated {len(df_final)} features!")
+    st.success(f"🎉 Pipeline finished! Annotated {len(df_final)} features out of {len(df)} total.")
+    
+    # 1. Summary Count Table
+    st.subheader("📊 Annotation Summary")
+    summary_df = df_final['Annotated'].value_counts().reset_index()
+    summary_df.columns = ['Annotation Type', 'Count']
+    st.dataframe(summary_df, use_container_width=True)
+    
+    # 2. Main Annotated Output
+    st.subheader("🧩 Final Annotated Features")
     r_columns = ['row.ID', 'Final_Name', 'NPCPathway', 'NPCSuperclass', 'NPCClass', 'Annotated', 'Score_value', 'Final_Formula', 'Final_Adduct', 'row.m.z', 'Accurate.mass', 'accuracy', 'row.retention.time', 'MSI_level', 'halogen_boron', 'Final_SMILES', 'Final_InChIKey']
     final_df = df_final[[c for c in r_columns if c in df_final.columns]]
     st.dataframe(final_df.head(50), use_container_width=True)
-    st.download_button("⬇️ Download Final Annotation Table", final_df.to_csv(index=False).encode('utf-8'), "FinalAnnotationTable.csv", "text/csv", type='primary')
+
+    # 3. Download Section
+    st.subheader("⬇️ Downloads")
+    c1, c2, c3 = st.columns(3)
+    
+    c1.download_button(
+        "📂 Download Final Annotations (.csv)", 
+        final_df.to_csv(index=False).encode('utf-8'), 
+        "FinalAnnotationTable.csv", 
+        "text/csv", 
+        type='primary'
+    )
+    
+    c2.download_button(
+        "📊 Download Summary Counts (.csv)", 
+        summary_df.to_csv(index=False).encode('utf-8'), 
+        "Summary_Counts.csv", 
+        "text/csv"
+    )
+    
+    c3.download_button(
+        "📝 Download Raw Merged Table (.csv)", 
+        df.to_csv(index=False).encode('utf-8'), 
+        "Raw_Merged_Table.csv", 
+        "text/csv",
+        help="Contains ALL features (including unannotated ones) for manual validation."
+    )
