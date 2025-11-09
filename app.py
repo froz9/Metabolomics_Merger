@@ -10,10 +10,10 @@ import io
 # ===================================================================
 # 1. CONFIG & HELPER FUNCTIONS
 # ===================================================================
-st.set_page_config(page_title="Metabolomics Merger", layout="wide")
+st.set_page_config(page_title="Metabolomics Tiered Merger", layout="wide", page_icon="🧬")
 
 def get_formula_from_smiles(smiles):
-    """Replaces R 'custom_formula' using RDKit. Faster, no OpenBabel needed."""
+    """Replaces R 'custom_formula' using RDKit."""
     try:
         if pd.isna(smiles) or smiles == "": return None
         mol = Chem.MolFromSmiles(smiles)
@@ -22,7 +22,7 @@ def get_formula_from_smiles(smiles):
     except: return None
 
 def calculate_tanimoto(smiles1, smiles2):
-    """Replaces R 'calculate_tanimoto...'. Uses Morgan fingerprints (ECFP4-like)."""
+    """Replaces R 'calculate_tanimoto...'. Uses Morgan fingerprints (ECFP4)."""
     try:
         if pd.isna(smiles1) or pd.isna(smiles2) or smiles1 == "" or smiles2 == "": return np.nan
         mol1 = Chem.MolFromSmiles(smiles1)
@@ -38,25 +38,14 @@ def get_accurate_mass(formula, adduct):
     """Calculates exact m/z for a given formula and adduct."""
     try:
         if pd.isna(formula) or pd.isna(adduct) or formula == "": return np.nan
-        # Create molmass object
         f = molmass.Formula(formula)
-        
-        # Simple adduct handling (expand this list if needed based on your data)
         adduct_masses = {
             "[M+H]+": 1.007276, "[M]+": 0.0, "[M+Na]+": 22.98977, 
-            "[M+NH4]+": 18.03383, "[M+K]+": 38.96370, "[M+2H]2+": 1.007276*2, # simplified
-             "[M-H]-": -1.007276, "[M+Cl]-": 34.96885
+            "[M+NH4]+": 18.03383, "[M+K]+": 38.96370, "[M+2H]2+": 1.007276*2,
+             "[M-H]-": -1.007276, "[M+Cl]-": 34.96885, "[M+H-H2O]+": 1.007276 - 18.010565
         }
-        
-        # Handle multiply charged species approximately if not strictly defined
-        charge = 1
-        if "2+" in adduct: charge = 2
-        elif "3+" in adduct: charge = 3
-        
+        charge = 2 if "2+" in adduct else (3 if "3+" in adduct else 1)
         mass_shift = adduct_masses.get(adduct, 0.0)
-        # If adduct not in simple list, might need more complex parsing, 
-        # but this covers 95% of standard FBMN outputs.
-        
         return (f.isotope.mass + mass_shift) / charge
     except: return np.nan
 
@@ -78,102 +67,92 @@ def get_npclassifier_data(smiles):
 # 2. MAIN APP INTERFACE
 # ===================================================================
 st.title("🧬 Metabolomics Tiered Merger")
-st.markdown("Upload outputs from FBMN, MolDiscovery, Dereplicator+, and SIRIUS to merge them using tiered confidence logic.")
+st.markdown("""
+Upload your outputs from **FBMN**, **MolDiscovery**, **Dereplicator+**, and **SIRIUS**. 
+This tool merges them using a tiered confidence approach based on community standards.
+""")
 
-with st.expander("📁 File Uploads", expanded=True):
+with st.expander("📁 File Uploads (Drag and Drop)", expanded=True):
     c1, c2 = st.columns(2)
-    fbmn_file = c1.file_uploader("FBMN Global Table (.tsv)", type=['tsv', 'txt'])
-    ms1_file = c1.file_uploader("Molecular Network / MS1 (.csv)", type=['csv'])
-    sirius_file = c1.file_uploader("SIRIUS Results (.csv)", type=['csv', 'txt'])
-    moldisc_file = c2.file_uploader("MolDiscovery (.tsv)", type=['tsv', 'txt'])
-    derep_file = c2.file_uploader("Dereplicator+ (.tsv)", type=['tsv', 'txt'])
+    fbmn_file = c1.file_uploader("FBMN Global Table (.tsv)", type=['tsv', 'txt'], help="Usually has 'Scan' or '#Scan#' column.")
+    ms1_file = c1.file_uploader("Molecular Network / MS1 (.csv)", type=['csv'], help="Contains 'cluster index', 'precursor mass', 'RTMean'.")
+    sirius_file = c1.file_uploader("SIRIUS Results (.csv)", type=['csv', 'txt'], help="Optional. Adds high-confidence in-silico annotations.")
+    moldisc_file = c2.file_uploader("MolDiscovery (.tsv)", type=['tsv', 'txt'], help="Optional. Great for small peptides/natural products.")
+    derep_file = c2.file_uploader("Dereplicator+ (.tsv)", type=['tsv', 'txt'], help="Optional. Peptidic annotation tool.")
 
 # ===================================================================
 # 3. PIPELINE LOGIC
 # ===================================================================
 if st.button("🚀 Run Merging Pipeline", type="primary"):
     if not (fbmn_file and ms1_file):
-        st.error("Missing required files: FBMN and MS1 are mandatory.")
+        st.error("❌ Missing required files: FBMN and MS1 are mandatory to start.")
         st.stop()
 
-    with st.status("Processing...", expanded=True) as status:
-        # --- A. LOAD & STANDARDIZE ---
-        st.write("Loading and standardizing dataframes...")
+    with st.status("🔄 Processing Pipeline...", expanded=True) as status:
+        
+        # --- A. LOAD & STANDARDIZE (Using fixes from local_debug.py) ---
+        st.write("📝 Loading and standardizing dataframes...")
         
         # MS1
         ms1 = pd.read_csv(ms1_file)
-        ms1['feature'] = ms1['precursor mass'].astype(str) + "_" + ms1['RTMean'].astype(str)
         ms1 = ms1.rename(columns={'cluster index': 'row.ID', 'precursor mass': 'row.m.z', 'RTMean': 'row.retention.time'})
-        ms1 = ms1[['row.ID', 'row.m.z', 'row.retention.time', 'feature']]
+        ms1['row.ID'] = ms1['row.ID'].astype(str) # FIX: Force String ID
+        ms1 = ms1[['row.ID', 'row.m.z', 'row.retention.time']]
 
         # FBMN
         fbmn = pd.read_csv(fbmn_file, sep='\t')
-        # Fix #Scan# issue specifically requested
         if '#Scan#' in fbmn.columns: fbmn = fbmn.rename(columns={'#Scan#': 'row.ID'})
         elif 'Scan' in fbmn.columns: fbmn = fbmn.rename(columns={'Scan': 'row.ID'})
+        fbmn['row.ID'] = fbmn['row.ID'].astype(str) # FIX: Force String ID
         
-        # Normalize Adducts common in FBMN
-        adduct_map = {"M+H":"[M+H]+", "M+2H":"[M+2H]2+", "M+Na":"[M+Na]+", "M+NH4":"[M+NH4]+", "M-H2O+H":"[M+H-H2O]+"}
+        adduct_map = {"M+H":"[M+H]+", "M+2H":"[M+2H]2+", "M+Na":"[M+Na]+", "M+NH4":"[M+NH4]+", "M-H2O+H":"[M+H-H2O]+", "M+K":"[M+K]+"}
         if 'Adduct' in fbmn.columns: fbmn['Adduct'] = fbmn['Adduct'].replace(adduct_map)
 
-        # Load optional files with IMMEDIATE suffixes to match your debug output
+        # Optional Files
         mold = pd.read_csv(moldisc_file, sep='\t').add_suffix('_mold').rename(columns={'#Scan#_mold':'row.ID', 'Scan_mold':'row.ID'}) if moldisc_file else pd.DataFrame(columns=['row.ID'])
+        if not mold.empty: mold['row.ID'] = mold['row.ID'].astype(str)
+
         derep = pd.read_csv(derep_file, sep='\t').add_suffix('_derep').rename(columns={'#Scan#_derep':'row.ID', 'Scan_derep':'row.ID'}) if derep_file else pd.DataFrame(columns=['row.ID'])
-        # Handle potential SIRIUS ID column variations before adding suffix
+        if not derep.empty: derep['row.ID'] = derep['row.ID'].astype(str)
+
         if sirius_file:
              s_temp = pd.read_csv(sirius_file)
-             # Try to find the ID column before suffixing
              for id_col in ['ID_extract', 'id', 'scan', 'compoundid']:
                  if id_col in s_temp.columns:
                      s_temp = s_temp.rename(columns={id_col: 'row.ID'})
                      break
              sirius = s_temp.add_suffix('_sirius').rename(columns={'row.ID_sirius': 'row.ID'})
+             sirius['row.ID'] = sirius['row.ID'].astype(str)
         else:
              sirius = pd.DataFrame(columns=['row.ID'])
 
         # --- B. MERGE ---
-        st.write("Merging tables...")
-        # Use outer join on row.ID to ensure we don't lose features if FBMN is filtered
+        st.write("🔗 Merging tables...")
         df = pd.merge(fbmn, ms1, on='row.ID', how='outer')
         if not mold.empty: df = pd.merge(df, mold, on='row.ID', how='left')
         if not derep.empty: df = pd.merge(df, derep, on='row.ID', how='left')
         if not sirius.empty: df = pd.merge(df, sirius, on='row.ID', how='left')
 
-        # Ensure numeric types for critical score columns
-        cols_to_numeric = ['MQScore', 'FDR_mold', 'Score_mold', 'ConfidenceScoreExact_sirius', 'FDR_derep', 'row.m.z']
-        for col in cols_to_numeric:
-            if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
-
-        # --- C. CALCULATE SIMILARITIES ---
-        if 'SMILES_mold' in df.columns and 'smiles_sirius' in df.columns:
-            st.write("Calculating Tanimoto similarities (MolDiscovery vs SIRIUS)...")
-            # Using apply here as it's hard to vectorize RDKit objects efficiently without generic numpy arrays
-            df['Tanimoto_molD_Sirius'] = df.apply(lambda x: calculate_tanimoto(x.get('SMILES_mold'), x.get('smiles_sirius')), axis=1)
-        else:
-            df['Tanimoto_molD_Sirius'] = np.nan
-
-        # --- D. TIERED ANNOTATION LOGIC ---
-        st.write("Applying tiered annotation rules...")
-
-        # 1. SAFEGUARD: Ensure absolutely ALL referenced columns exist.
-        # If a file wasn't uploaded, we must create the column filled with NaNs 
-        # so np.select receives consistent data shapes (Series of length N), not None scalars.
-        all_required_cols = [
-            # Condition columns
+        # --- C. SAFEGUARDS & CLEANING (Crucial for np.select stability) ---
+        required_cols = [
             'MQScore', 'FDR_mold', 'ConfidenceScoreExact_sirius', 'Tanimoto_molD_Sirius', 
-            'row.m.z', 'FDR_derep', 'NPC#pathway_sirius',
-            # Choice columns (Names, SMILES, Adducts, Formulas)
-            'Compound_Name', 'Name_mold', 'name_sirius', 'Name_derep',
-            'Smiles', 'SMILES_mold', 'smiles_sirius', 'SMILES_derep',
-            'Adduct', 'Adduct_mold', 'adduct.y_sirius', 'Adduct_derep', 'adduct.x_sirius',
-            'molecularFormula.y_sirius', 'molecularFormula.x_sirius'
+            'row.m.z', 'FDR_derep', 'NPC#pathway_sirius', 'Compound_Name', 'Name_mold', 
+            'name_sirius', 'Name_derep', 'Smiles', 'SMILES_mold', 'smiles_sirius', 
+            'SMILES_derep', 'Adduct', 'Adduct_mold', 'adduct.y_sirius', 'Adduct_derep', 
+            'adduct.x_sirius', 'molecularFormula.y_sirius', 'molecularFormula.x_sirius'
         ]
-        
-        for col in all_required_cols:
-            if col not in df.columns:
-                df[col] = np.nan
+        for col in required_cols:
+            if col not in df.columns: df[col] = np.nan
 
-        # 2. Define Conditions (Now safe because columns guaranteed to exist)
+        for col in ['MQScore', 'FDR_mold', 'ConfidenceScoreExact_sirius', 'row.m.z', 'FDR_derep']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # --- D. TANIMOTO & TIERED LOGIC ---
+        st.write("🧪 Calculating chemical similarities & applying rules...")
+        mask_can_calc = df['SMILES_mold'].notna() & df['smiles_sirius'].notna()
+        if mask_can_calc.any():
+             df.loc[mask_can_calc, 'Tanimoto_molD_Sirius'] = df[mask_can_calc].apply(lambda x: calculate_tanimoto(x['SMILES_mold'], x['smiles_sirius']), axis=1)
+
         c_gnps = (df['MQScore'] > 0)
         c_consensus = (df['FDR_mold'] < 1) & (df['ConfidenceScoreExact_sirius'] > 0.6) & (df['Tanimoto_molD_Sirius'] > 0.85)
         c_mold_high = (df['row.m.z'] > 600) & (df['FDR_mold'] < 1)
@@ -184,98 +163,62 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         c_canopus = df['NPC#pathway_sirius'].notna()
 
         conditions = [c_gnps, c_consensus, c_mold_high, c_sirius_high, c_derep, c_mold_low, c_sirius_low, c_canopus]
-        choices = [
-            "GNPS/Spectral Match", "Consensus (molD + Sirius)", "molDiscovery (>600 Da)",
-            "Sirius/CSI:FingerID (<=600 Da)", "Dereplicator+", "molDiscovery (fallback)",
-            "Sirius/CSI:FingerID (fallback)", "Sirius/CANOPUS"
-        ]
-        
-        df['Annotated'] = np.select(conditions, choices, default=np.nan)
+        choices_annot = ["GNPS/Spectral Match", "Consensus (molD + Sirius)", "molDiscovery (>600 Da)", "Sirius/CSI:FingerID (<=600 Da)", "Dereplicator+", "molDiscovery (fallback)", "Sirius/CSI:FingerID (fallback)", "Sirius/CANOPUS"]
 
-        # --- E. CONSOLIDATE FINAL COLUMNS ---
-        # Now we can safely use direct column references df['Col'] instead of df.get('Col')
+        df['Annotated'] = np.select(conditions, choices_annot, default=None)
+        
         df['Final_Name'] = np.select(conditions, [
-            df['Compound_Name'], df['Name_mold'], df['Name_mold'], 
-            df['name_sirius'], df['Name_derep'], df['Name_mold'], 
-            df['name_sirius'], "MolecularFormula_Class_predicted"
-        ], default=np.nan)
+            df['Compound_Name'], df['Name_mold'], df['Name_mold'], df['name_sirius'], 
+            df['Name_derep'], df['Name_mold'], df['name_sirius'], "MolecularFormula_Class_predicted"
+        ], default=None)
 
         df['Final_SMILES'] = np.select(conditions, [
-            df['Smiles'], df['SMILES_mold'], df['SMILES_mold'], 
-            df['smiles_sirius'], df['SMILES_derep'], df['SMILES_mold'], 
-            df['smiles_sirius'], np.nan
-        ], default=np.nan)
+            df['Smiles'], df['SMILES_mold'], df['SMILES_mold'], df['smiles_sirius'], 
+            df['SMILES_derep'], df['SMILES_mold'], df['smiles_sirius'], None
+        ], default=None)
 
         df['Final_Adduct'] = np.select(conditions, [
-            df['Adduct'], df['Adduct_mold'], df['Adduct_mold'],
-            df['adduct.y_sirius'], df['Adduct_derep'], df['Adduct_mold'],
-            df['adduct.y_sirius'], df['adduct.x_sirius']
-        ], default=np.nan)
+            df['Adduct'], df['Adduct_mold'], df['Adduct_mold'], df['adduct.y_sirius'], 
+            df['Adduct_derep'], df['Adduct_mold'], df['adduct.y_sirius'], df['adduct.x_sirius']
+        ], default=None)
 
-        # Final Formula Logic
-        df['Final_Formula'] = np.select(
-            [c_sirius_high | c_sirius_low, c_canopus], 
-            [df['molecularFormula.y_sirius'], df['molecularFormula.x_sirius']], 
-            default=np.nan
-        )
-        # Fill remaining gaps
+        df['Final_Formula'] = np.select([c_sirius_high | c_sirius_low, c_canopus], [df['molecularFormula.y_sirius'], df['molecularFormula.x_sirius']], default=None)
+        
         mask_need_formula = df['Final_Formula'].isna() & df['Final_SMILES'].notna()
         if mask_need_formula.any():
              df.loc[mask_need_formula, 'Final_Formula'] = df[mask_need_formula]['Final_SMILES'].apply(get_formula_from_smiles)
 
-        # --- F. ACCURACY & NPCLASSIFIER ---
-        # Filter to only annotated rows for expensive API calls
+        # --- E. API & ACCURACY ---
         df_final = df.dropna(subset=['Annotated']).copy()
+        st.write(f"🌍 Fetching NPClassifier for {len(df_final)} features...")
         
-        st.write(f"Found {len(df_final)} annotated features. Fetching NPClassifier classes...")
-        
-        # Accurate Mass
         df_final['Accurate_Mass'] = df_final.apply(lambda x: get_accurate_mass(x.get('Final_Formula'), x.get('Final_Adduct')), axis=1)
-        # custom_ppm inline
-        df_final['ppm_error'] = ((df_final['row.m.z'] - df_final['Accurate_Mass']) / df_final['Accurate_Mass']) * 1000000
+        df_final['ppm_error'] = ((df_final['row.m.z'] - df_final['Accurate_Mass']) / df_final['Accurate_Mass']) * 1e6
 
-        # NPClassifier Loop (with progress bar)
-        # Pre-fill with SIRIUS NPC results if available (saves API calls)
-        df_final['NPC_Pathway'] = df_final.get('NPC#pathway_sirius')
-        df_final['NPC_Superclass'] = df_final.get('NPC#superclass_sirius')
-        df_final['NPC_Class'] = df_final.get('NPC#class_sirius')
+        # Initialize NPC columns with SIRIUS data if available
+        for col, sirius_col in [('NPC_Pathway', 'NPC#pathway_sirius'), ('NPC_Superclass', 'NPC#superclass_sirius'), ('NPC_Class', 'NPC#class_sirius')]:
+             df_final[col] = df_final.get(sirius_col, np.nan)
 
-        # Identify rows that still need NPC from API (have SMILES but no SIRIUS NPC)
-        mask_api_needed = df_final['Final_SMILES'].notna() & df_final['NPC_Pathway'].isna()
-        rows_to_query = df_final[mask_api_needed]
-        
+        # Query API for remaining SMILES
+        mask_api = df_final['Final_SMILES'].notna() & df_final['NPC_Pathway'].isna()
+        rows_to_query = df_final[mask_api]
         if not rows_to_query.empty:
-            progress_bar = st.progress(0)
-            total = len(rows_to_query)
+            prog = st.progress(0)
             for i, (idx, row) in enumerate(rows_to_query.iterrows()):
                 p, s, c_cls = get_npclassifier_data(row['Final_SMILES'])
                 df_final.at[idx, 'NPC_Pathway'] = p
                 df_final.at[idx, 'NPC_Superclass'] = s
                 df_final.at[idx, 'NPC_Class'] = c_cls
-                if i % 5 == 0: progress_bar.progress(min(1.0, (i + 1) / total))
-            progress_bar.empty()
+                if i % 5 == 0: prog.progress(min(1.0, (i + 1) / len(rows_to_query)))
+            prog.empty()
 
-        status.update(label="Merging Complete!", state="complete", expanded=False)
+        status.update(label="✅ Merging Complete!", state="complete", expanded=False)
 
-    # --- G. RESULTS & DOWNLOAD ---
-    st.success(f"Pipeline finished! {len(df_final)} features annotated.")
+    # --- F. RESULTS ---
+    st.success(f"🎉 Success! {len(df_final)} features annotated out of {len(df)} total.")
     
-    # Final column selection for clean output
-    final_cols = [
-        'row.ID', 'row.m.z', 'row.retention.time', 'Annotated', 'Final_Name', 
-        'Final_Formula', 'Final_Adduct', 'ppm_error', 'NPC_Pathway', 
-        'NPC_Superclass', 'NPC_Class', 'Final_SMILES'
-    ]
-    # Only keep columns that actually exist
+    final_cols = ['row.ID', 'row.m.z', 'row.retention.time', 'Annotated', 'Final_Name', 'Final_Formula', 'Final_Adduct', 'ppm_error', 'NPC_Pathway', 'NPC_Superclass', 'NPC_Class', 'Final_SMILES']
     existing_cols = [c for c in final_cols if c in df_final.columns]
-    st.dataframe(df_final[existing_cols].head(20))
+    st.dataframe(df_final[existing_cols].head(50), use_container_width=True)
 
-    # CSV Download
-    csv = df_final.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        "⬇️ Download Merged Annotation Table",
-        csv,
-        "Merged_Annotations.csv",
-        "text/csv",
-        key='download-csv'
-    )
+    st.download_button("⬇️ Download Annotation Table (CSV)", df_final.to_csv(index=False).encode('utf-8'), "Merged_Annotations.csv", "text/csv", type='primary')
