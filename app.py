@@ -155,18 +155,25 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         # --- D. TIERED ANNOTATION LOGIC ---
         st.write("Applying tiered annotation rules...")
 
-        # 1. SAFEGUARD: Ensure all logic columns exist, even if files were not uploaded.
-        # This prevents 'NoneType' errors in the conditions below.
-        required_cols = [
-            'MQScore', 'FDR_mold', 'ConfidenceScoreExact_sirius', 
-            'Tanimoto_molD_Sirius', 'row.m.z', 'FDR_derep', 
-            'NPC#pathway_sirius', 'molecularFormula.y_sirius', 'molecularFormula.x_sirius'
+        # 1. SAFEGUARD: Ensure absolutely ALL referenced columns exist.
+        # If a file wasn't uploaded, we must create the column filled with NaNs 
+        # so np.select receives consistent data shapes (Series of length N), not None scalars.
+        all_required_cols = [
+            # Condition columns
+            'MQScore', 'FDR_mold', 'ConfidenceScoreExact_sirius', 'Tanimoto_molD_Sirius', 
+            'row.m.z', 'FDR_derep', 'NPC#pathway_sirius',
+            # Choice columns (Names, SMILES, Adducts, Formulas)
+            'Compound_Name', 'Name_mold', 'name_sirius', 'Name_derep',
+            'Smiles', 'SMILES_mold', 'smiles_sirius', 'SMILES_derep',
+            'Adduct', 'Adduct_mold', 'adduct.y_sirius', 'Adduct_derep', 'adduct.x_sirius',
+            'molecularFormula.y_sirius', 'molecularFormula.x_sirius'
         ]
-        for col in required_cols:
+        
+        for col in all_required_cols:
             if col not in df.columns:
                 df[col] = np.nan
 
-        # 2. Define conditions using standard pandas comparisons (NaNs automatically evaluate to False in these checks)
+        # 2. Define Conditions (Now safe because columns guaranteed to exist)
         c_gnps = (df['MQScore'] > 0)
         c_consensus = (df['FDR_mold'] < 1) & (df['ConfidenceScoreExact_sirius'] > 0.6) & (df['Tanimoto_molD_Sirius'] > 0.85)
         c_mold_high = (df['row.m.z'] > 600) & (df['FDR_mold'] < 1)
@@ -183,27 +190,26 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
             "Sirius/CSI:FingerID (fallback)", "Sirius/CANOPUS"
         ]
         
-        # np.select is now safe because all conditions are guaranteed to be boolean Series of the same length
         df['Annotated'] = np.select(conditions, choices, default=np.nan)
 
         # --- E. CONSOLIDATE FINAL COLUMNS ---
-        # (Using .get() here is still fine as these are just string retrievals, not boolean logic tests)
+        # Now we can safely use direct column references df['Col'] instead of df.get('Col')
         df['Final_Name'] = np.select(conditions, [
-            df.get('Compound_Name'), df.get('Name_mold'), df.get('Name_mold'), 
-            df.get('name_sirius'), df.get('Name_derep'), df.get('Name_mold'), 
-            df.get('name_sirius'), "MolecularFormula_Class_predicted"
+            df['Compound_Name'], df['Name_mold'], df['Name_mold'], 
+            df['name_sirius'], df['Name_derep'], df['Name_mold'], 
+            df['name_sirius'], "MolecularFormula_Class_predicted"
         ], default=np.nan)
 
         df['Final_SMILES'] = np.select(conditions, [
-            df.get('Smiles'), df.get('SMILES_mold'), df.get('SMILES_mold'), 
-            df.get('smiles_sirius'), df.get('SMILES_derep'), df.get('SMILES_mold'), 
-            df.get('smiles_sirius'), np.nan
+            df['Smiles'], df['SMILES_mold'], df['SMILES_mold'], 
+            df['smiles_sirius'], df['SMILES_derep'], df['SMILES_mold'], 
+            df['smiles_sirius'], np.nan
         ], default=np.nan)
 
         df['Final_Adduct'] = np.select(conditions, [
-            df.get('Adduct'), df.get('Adduct_mold'), df.get('Adduct_mold'),
-            df.get('adduct.y_sirius'), df.get('Adduct_derep'), df.get('Adduct_mold'),
-            df.get('adduct.y_sirius'), df.get('adduct.x_sirius')
+            df['Adduct'], df['Adduct_mold'], df['Adduct_mold'],
+            df['adduct.y_sirius'], df['Adduct_derep'], df['Adduct_mold'],
+            df['adduct.y_sirius'], df['adduct.x_sirius']
         ], default=np.nan)
 
         # Final Formula Logic
@@ -216,43 +222,6 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         mask_need_formula = df['Final_Formula'].isna() & df['Final_SMILES'].notna()
         if mask_need_formula.any():
              df.loc[mask_need_formula, 'Final_Formula'] = df[mask_need_formula]['Final_SMILES'].apply(get_formula_from_smiles)
-
-        # --- E. CONSOLIDATE FINAL COLUMNS ---
-        # 1. Final Name
-        df['Final_Name'] = np.select(conditions, [
-            df.get('Compound_Name'), df.get('Name_mold'), df.get('Name_mold'), 
-            df.get('name_sirius'), df.get('Name_derep'), df.get('Name_mold'), 
-            df.get('name_sirius'), "MolecularFormula_Class_predicted"
-        ], default=np.nan)
-
-        # 2. Final SMILES
-        df['Final_SMILES'] = np.select(conditions, [
-            df.get('Smiles'), df.get('SMILES_mold'), df.get('SMILES_mold'), 
-            df.get('smiles_sirius'), df.get('SMILES_derep'), df.get('SMILES_mold'), 
-            df.get('smiles_sirius'), np.nan
-        ], default=np.nan)
-
-        # 3. Final Formula (Complex: tries SIRIUS first, then calcs from SMILES)
-        # First, get best available formula from SIRIUS depending on tier
-        formula_sirius_y = df.get('molecularFormula.y_sirius', pd.Series([np.nan]*len(df)))
-        formula_sirius_x = df.get('molecularFormula.x_sirius', pd.Series([np.nan]*len(df)))
-        
-        df['Final_Formula'] = np.select(
-            [c_sirius_high | c_sirius_low, c_canopus], 
-            [formula_sirius_y, formula_sirius_x], 
-            default=np.nan
-        )
-        # Fill remaining gaps by calculating from Final_SMILES
-        mask_need_formula = df['Final_Formula'].isna() & df['Final_SMILES'].notna()
-        if mask_need_formula.any():
-             df.loc[mask_need_formula, 'Final_Formula'] = df[mask_need_formula]['Final_SMILES'].apply(get_formula_from_smiles)
-
-        # 4. Final Adduct
-        df['Final_Adduct'] = np.select(conditions, [
-            df.get('Adduct'), df.get('Adduct_mold'), df.get('Adduct_mold'),
-            df.get('adduct.y_sirius'), df.get('Adduct_derep'), df.get('Adduct_mold'),
-            df.get('adduct.y_sirius'), df.get('adduct.x_sirius')
-        ], default=np.nan)
 
         # --- F. ACCURACY & NPCLASSIFIER ---
         # Filter to only annotated rows for expensive API calls
