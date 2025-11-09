@@ -12,11 +12,11 @@ import os
 # 1. CONFIG & HELPER FUNCTIONS
 # ===================================================================
 st.set_page_config(page_title="Metabolomics Tiered Merger", 
-    layout="wide", 
+    layout="centered", 
     page_icon="🦠🧪",
      menu_items={
     'Report a bug': "mailto:f9.alan@gmail.com",
-    'About': "# This app was developed for those who are interested in processing their *MS-DIAL 5* output files to be suitable for *GNPS1*!"
+    'About': "# This app was developed for those who are interested in merging output files from different sources."
     }
     )
 st.title("Metabolomics Tiered Merger")
