@@ -154,29 +154,68 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
 
         # --- D. TIERED ANNOTATION LOGIC ---
         st.write("Applying tiered annotation rules...")
-        
-        # Define masks for each tier (replicating R case_when)
-        # Use .get() to safely handle missing columns if a tool wasn't uploaded
-        c_gnps = (df.get('MQScore', pd.Series([np.nan]*len(df))) > 0)
-        
-        # Consensus: FDR_mold < 1 & SiriusConf > 0.6 & Tanimoto > 0.85
-        c_consensus = (df.get('FDR_mold') < 1) & (df.get('ConfidenceScoreExact_sirius') > 0.6) & (df.get('Tanimoto_molD_Sirius') > 0.85)
-        
-        c_mold_high = (df.get('row.m.z') > 600) & (df.get('FDR_mold') < 1)
-        c_sirius_high = (df.get('row.m.z') <= 600) & (df.get('ConfidenceScoreExact_sirius') > 0.6)
-        c_derep = (df.get('FDR_derep') <= 5)
-        c_mold_low = (df.get('FDR_mold') < 5)
-        c_sirius_low = (df.get('ConfidenceScoreExact_sirius') > 0.1)
-        c_canopus = df.get('NPC#pathway_sirius').notna() # Using NPC pathway as proxy for CANOPUS success
 
-        # Master Annotation Tier List (Order matters! First True wins)
+        # 1. SAFEGUARD: Ensure all logic columns exist, even if files were not uploaded.
+        # This prevents 'NoneType' errors in the conditions below.
+        required_cols = [
+            'MQScore', 'FDR_mold', 'ConfidenceScoreExact_sirius', 
+            'Tanimoto_molD_Sirius', 'row.m.z', 'FDR_derep', 
+            'NPC#pathway_sirius', 'molecularFormula.y_sirius', 'molecularFormula.x_sirius'
+        ]
+        for col in required_cols:
+            if col not in df.columns:
+                df[col] = np.nan
+
+        # 2. Define conditions using standard pandas comparisons (NaNs automatically evaluate to False in these checks)
+        c_gnps = (df['MQScore'] > 0)
+        c_consensus = (df['FDR_mold'] < 1) & (df['ConfidenceScoreExact_sirius'] > 0.6) & (df['Tanimoto_molD_Sirius'] > 0.85)
+        c_mold_high = (df['row.m.z'] > 600) & (df['FDR_mold'] < 1)
+        c_sirius_high = (df['row.m.z'] <= 600) & (df['ConfidenceScoreExact_sirius'] > 0.6)
+        c_derep = (df['FDR_derep'] <= 5)
+        c_mold_low = (df['FDR_mold'] < 5)
+        c_sirius_low = (df['ConfidenceScoreExact_sirius'] > 0.1)
+        c_canopus = df['NPC#pathway_sirius'].notna()
+
         conditions = [c_gnps, c_consensus, c_mold_high, c_sirius_high, c_derep, c_mold_low, c_sirius_low, c_canopus]
         choices = [
             "GNPS/Spectral Match", "Consensus (molD + Sirius)", "molDiscovery (>600 Da)",
             "Sirius/CSI:FingerID (<=600 Da)", "Dereplicator+", "molDiscovery (fallback)",
             "Sirius/CSI:FingerID (fallback)", "Sirius/CANOPUS"
         ]
+        
+        # np.select is now safe because all conditions are guaranteed to be boolean Series of the same length
         df['Annotated'] = np.select(conditions, choices, default=np.nan)
+
+        # --- E. CONSOLIDATE FINAL COLUMNS ---
+        # (Using .get() here is still fine as these are just string retrievals, not boolean logic tests)
+        df['Final_Name'] = np.select(conditions, [
+            df.get('Compound_Name'), df.get('Name_mold'), df.get('Name_mold'), 
+            df.get('name_sirius'), df.get('Name_derep'), df.get('Name_mold'), 
+            df.get('name_sirius'), "MolecularFormula_Class_predicted"
+        ], default=np.nan)
+
+        df['Final_SMILES'] = np.select(conditions, [
+            df.get('Smiles'), df.get('SMILES_mold'), df.get('SMILES_mold'), 
+            df.get('smiles_sirius'), df.get('SMILES_derep'), df.get('SMILES_mold'), 
+            df.get('smiles_sirius'), np.nan
+        ], default=np.nan)
+
+        df['Final_Adduct'] = np.select(conditions, [
+            df.get('Adduct'), df.get('Adduct_mold'), df.get('Adduct_mold'),
+            df.get('adduct.y_sirius'), df.get('Adduct_derep'), df.get('Adduct_mold'),
+            df.get('adduct.y_sirius'), df.get('adduct.x_sirius')
+        ], default=np.nan)
+
+        # Final Formula Logic
+        df['Final_Formula'] = np.select(
+            [c_sirius_high | c_sirius_low, c_canopus], 
+            [df['molecularFormula.y_sirius'], df['molecularFormula.x_sirius']], 
+            default=np.nan
+        )
+        # Fill remaining gaps
+        mask_need_formula = df['Final_Formula'].isna() & df['Final_SMILES'].notna()
+        if mask_need_formula.any():
+             df.loc[mask_need_formula, 'Final_Formula'] = df[mask_need_formula]['Final_SMILES'].apply(get_formula_from_smiles)
 
         # --- E. CONSOLIDATE FINAL COLUMNS ---
         # 1. Final Name
