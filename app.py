@@ -11,8 +11,21 @@ import os
 # ===================================================================
 # 1. CONFIG & HELPER FUNCTIONS
 # ===================================================================
-st.set_page_config(page_title="Metabolomics Tiered Merger", layout="wide", page_icon="🧬")
+st.set_page_config(page_title="Metabolomics Tiered Merger", 
+    layout="wide", 
+    page_icon="🦠🧪",
+     menu_items={
+    'Report a bug': "mailto:f9.alan@gmail.com",
+    'About': "# This app was developed for those who are interested in processing their *MS-DIAL 5* output files to be suitable for *GNPS1*!"
+    }
+    )
+st.title("Metabolomics Tiered Merger")
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    st.image("logo_L125.png")
 
+st.markdown("---")
+st.write("Lab 125, Chemistry Faculty, UNAM, MX")
 # --- DEFAULT ADDUCTS (Fallback if no 'adducts.csv' is found) ---
 DEFAULT_ADDUCTS = {
     "[M+H]+": (1, 1.007276, 1), "M+H": (1, 1.007276, 1),
