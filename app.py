@@ -14,7 +14,7 @@ import os
 st.set_page_config(
     page_title="Metabolomics Tiered Merger", 
     layout="wide", 
-    page_icon="⚗️🦠",
+    page_icon="⚗️",
     menu_items={
         'Report a bug': "mailto:your_email@example.com",
         'About': "# Tiered merging tool for FBMN, SIRIUS, MolDiscovery, and Dereplicator+."
