@@ -11,20 +11,17 @@ import os
 # ===================================================================
 # 1. CONFIG & HELPER FUNCTIONS
 # ===================================================================
-st.set_page_config(page_title="Metabolomics Tiered Merger", 
+st.set_page_config(
+    page_title="Metabolomics Tiered Merger", 
     layout="wide", 
-    page_icon="🦠🧪",
-     menu_items={
-    'Report a bug': "mailto:f9.alan@gmail.com",
-    'About': "# This app was developed for those who are interested in merging output files from different sources."
+    page_icon="🧬",
+    menu_items={
+        'Report a bug': "mailto:your_email@example.com",
+        'About': "# Tiered merging tool for FBMN, SIRIUS, MolDiscovery, and Dereplicator+."
     }
-    )
-st.title("Metabolomics Tiered Merger")
-st.image("logo_L125.png", width = 300)
+)
 
-st.markdown("---")
-st.write("Lab 125, Chemistry Faculty, UNAM, MX")
-# --- DEFAULT ADDUCTS (Fallback if no 'adducts.csv' is found) ---
+# --- DEFAULT ADDUCTS ---
 DEFAULT_ADDUCTS = {
     "[M+H]+": (1, 1.007276, 1), "M+H": (1, 1.007276, 1),
     "[M+Na]+": (1, 22.989769, 1), "M+Na": (1, 22.989769, 1),
@@ -39,7 +36,6 @@ DEFAULT_ADDUCTS = {
 }
 
 def parse_msac_adduct(adduct_str):
-    """Parses MSAC-style strings like '2M+ClO3' into multiplier and added mass."""
     try:
         multi_match = re.match(r"^(\d*)M", adduct_str)
         mult = float(multi_match.group(1)) if multi_match and multi_match.group(1) else 1.0
@@ -52,7 +48,6 @@ def parse_msac_adduct(adduct_str):
     except: return 1.0, 0.0
 
 def load_local_adducts():
-    """Loads 'adducts.csv' from the local directory if it exists."""
     rules = DEFAULT_ADDUCTS.copy()
     if os.path.exists("adducts.csv"):
         try:
@@ -62,13 +57,12 @@ def load_local_adducts():
                 name = str(row.get('adduct', '')).strip()
                 if not name: continue
                 charge = float(row.get('charge', 1.0))
-                # Prefer explicit columns if available, else parse string
                 if 'mass_multi' in row and 'mass_add' in row:
                     mult, add = float(row['mass_multi']), float(row['mass_add'])
                 else:
                     mult, add = parse_msac_adduct(name)
                 rules[name] = (mult, add, charge)
-        except: pass # Silently fail back to defaults if CSV is malformed
+        except: pass
     return rules
 
 def get_formula_from_smiles(smiles):
@@ -140,31 +134,38 @@ def get_npclassifier_data(smiles):
 # ===================================================================
 # 2. MAIN APP INTERFACE
 # ===================================================================
-st.title("🧬 Metabolomics Tiered Merger")
-st.markdown("Upload outputs from FBMN, MolDiscovery, Dereplicator+, and SIRIUS.")
+st.title("Metabolomics Tiered Merger")
+c1, c2, c3 = st.columns([1, 2, 1])
+with c2:
+    # Adjust width as needed for your specific logo
+    st.image("logo_L125.png", width=300) 
+
+st.markdown("---")
+st.write("Lab 125, Chemistry Faculty, UNAM, MX")
 
 with st.expander("📁 File Uploads", expanded=True):
-    c1, c2 = st.columns(2)
-    fbmn_file = c1.file_uploader("FBMN Global Table (.tsv)", type=['tsv', 'txt'])
-    ms1_file = c1.file_uploader("Molecular Network / MS1 (.csv)", type=['csv'])
-    sirius_file = c1.file_uploader("SIRIUS Results (.csv)", type=['csv', 'txt'])
-    moldisc_file = c2.file_uploader("MolDiscovery (.tsv)", type=['tsv', 'txt'])
-    derep_file = c2.file_uploader("Dereplicator+ (.tsv)", type=['tsv', 'txt'])
+    col1, col2 = st.columns(2)
+    fbmn_file = col1.file_uploader("FBMN Global Table (.tsv) [Required]", type=['tsv', 'txt'])
+    ms1_file = col1.file_uploader("Molecular Network / MS1 (.csv) [Required]", type=['csv'])
+    sirius_file = col1.file_uploader("SIRIUS Results (.csv) [Required]", type=['csv', 'txt'])
+    
+    moldisc_file = col2.file_uploader("MolDiscovery (.tsv) [Optional]", type=['tsv', 'txt'])
+    derep_file = col2.file_uploader("Dereplicator+ (.tsv) [Optional]", type=['tsv', 'txt'])
 
 # ===================================================================
 # 3. PIPELINE LOGIC
 # ===================================================================
 if st.button("🚀 Run Merging Pipeline", type="primary"):
-    if not (fbmn_file and ms1_file):
-        st.error("❌ FBMN and MS1 files are mandatory.")
+    # ENFORCED MANDATORY FILES
+    if not (fbmn_file and ms1_file and sirius_file):
+        st.error("❌ Missing required files! You must upload FBMN, MS1, and SIRIUS files to proceed.")
         st.stop()
 
     with st.status("🔄 Processing...", expanded=True) as status:
-        # --- 0. LOAD INTERNAL ADDUCTS ---
         ADDUCT_RULES = load_local_adducts()
 
-        # --- 1. LOAD DATA ---
-        st.write("📝 Loading data...")
+        # --- 1. LOAD MANDATORY DATA ---
+        st.write("📝 Loading mandatory data...")
         ms1 = pd.read_csv(ms1_file)
         ms1 = ms1.rename(columns={'cluster index': 'row.ID', 'precursor mass': 'row.m.z', 'RTMean': 'row.retention.time'})
         ms1['row.ID'] = ms1['row.ID'].astype(str)
@@ -177,36 +178,40 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         adduct_map = {"M+H":"[M+H]+", "M+2H":"[M+2H]2+", "M+Na":"[M+Na]+", "M+NH4":"[M+NH4]+", "M-H2O+H":"[M+H-H2O]+", "M+K":"[M+K]+"}
         if 'Adduct' in fbmn.columns: fbmn['Adduct'] = fbmn['Adduct'].replace(adduct_map)
 
-        mold = pd.read_csv(moldisc_file, sep='\t').add_suffix('_mold').rename(columns={'#Scan#_mold':'row.ID', 'Scan_mold':'row.ID'}) if moldisc_file else pd.DataFrame(columns=['row.ID'])
-        if not mold.empty: mold['row.ID'] = mold['row.ID'].astype(str)
-        derep = pd.read_csv(derep_file, sep='\t').add_suffix('_derep').rename(columns={'#Scan#_derep':'row.ID', 'Scan_derep':'row.ID'}) if derep_file else pd.DataFrame(columns=['row.ID'])
-        if not derep.empty: derep['row.ID'] = derep['row.ID'].astype(str)
+        s_temp = pd.read_csv(sirius_file)
+        for id_col in ['ID_extract', 'id', 'scan', 'compoundid']:
+             if id_col in s_temp.columns:
+                 s_temp = s_temp.rename(columns={id_col: 'row.ID'})
+                 break
+        sirius = s_temp.add_suffix('_sirius').rename(columns={'row.ID_sirius': 'row.ID'})
+        sirius['row.ID'] = sirius['row.ID'].astype(str)
 
-        if sirius_file:
-             s_temp = pd.read_csv(sirius_file)
-             for id_col in ['ID_extract', 'id', 'scan', 'compoundid']:
-                 if id_col in s_temp.columns:
-                     s_temp = s_temp.rename(columns={id_col: 'row.ID'})
-                     break
-             sirius = s_temp.add_suffix('_sirius').rename(columns={'row.ID_sirius': 'row.ID'})
-             sirius['row.ID'] = sirius['row.ID'].astype(str)
-        else: sirius = pd.DataFrame(columns=['row.ID'])
+        # --- 2. LOAD OPTIONAL DATA ---
+        mold = pd.DataFrame(columns=['row.ID'])
+        if moldisc_file:
+            mold = pd.read_csv(moldisc_file, sep='\t').add_suffix('_mold').rename(columns={'#Scan#_mold':'row.ID', 'Scan_mold':'row.ID'})
+            mold['row.ID'] = mold['row.ID'].astype(str)
 
-        # --- 2. MERGE ---
+        derep = pd.DataFrame(columns=['row.ID'])
+        if derep_file:
+            derep = pd.read_csv(derep_file, sep='\t').add_suffix('_derep').rename(columns={'#Scan#_derep':'row.ID', 'Scan_derep':'row.ID'})
+            derep['row.ID'] = derep['row.ID'].astype(str)
+
+        # --- 3. MERGE ---
         st.write("🔗 Merging tables...")
         df = pd.merge(fbmn, ms1, on='row.ID', how='outer')
+        df = pd.merge(df, sirius, on='row.ID', how='left') # SIRIUS is now mandatory merge
         if not mold.empty: df = pd.merge(df, mold, on='row.ID', how='left')
         if not derep.empty: df = pd.merge(df, derep, on='row.ID', how='left')
-        if not sirius.empty: df = pd.merge(df, sirius, on='row.ID', how='left')
 
-        # --- 3. SAFEGUARDS ---
+        # --- 4. SAFEGUARDS (Critical for optional files) ---
         req_cols = ['MQScore', 'FDR_mold', 'Score_mold', 'ConfidenceScoreExact_sirius', 'row.m.z', 'FDR_derep', 'Score_derep', 'NPC#pathway_sirius', 'Compound_Name', 'Name_mold', 'name_sirius', 'Name_derep', 'Smiles', 'SMILES_mold', 'smiles_sirius', 'SMILES_derep', 'Adduct', 'Adduct_mold', 'adduct.y_sirius', 'Adduct_derep', 'adduct.x_sirius', 'molecularFormula.y_sirius', 'molecularFormula.x_sirius', 'InChIKey', 'InChIkey2D_sirius']
         for col in req_cols:
             if col not in df.columns: df[col] = np.nan
         for col in ['MQScore', 'FDR_mold', 'ConfidenceScoreExact_sirius', 'row.m.z', 'FDR_derep']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        # --- 4. TIERED LOGIC ---
+        # --- 5. TIERED LOGIC ---
         st.write("🧪 Applying annotation rules...")
         df['Tanimoto_molD_Sirius'] = np.nan
         mask_calc = df['SMILES_mold'].notna() & df['smiles_sirius'].notna()
@@ -246,13 +251,13 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         df['Final_SMILES'] = np.select(conds, [df['Smiles'], df['SMILES_mold'], df['SMILES_mold'], df['smiles_sirius'], df['SMILES_derep'], df['SMILES_mold'], df['smiles_sirius'], None], default=None)
         df['Final_Adduct'] = np.select(conds, [df['Adduct'], df['Adduct_mold'], df['Adduct_mold'], df['adduct.y_sirius'], df['Adduct_derep'], df['Adduct_mold'], df['adduct.y_sirius'], df['adduct.x_sirius']], default=None)
         df['Final_InChIKey'] = np.select(conds, [df['InChIKey'], None, None, df['InChIkey2D_sirius'], None, None, df['InChIkey2D_sirius'], None], default=None)
-        
         df['Final_Formula'] = np.select([conds[3] | conds[6], conds[7]], [df['molecularFormula.y_sirius'], df['molecularFormula.x_sirius']], default=None)
+        
         mask_smiles = df['Final_SMILES'].notna()
         if mask_smiles.any():
              df.loc[mask_smiles, 'Final_Formula'] = df[mask_smiles]['Final_SMILES'].apply(get_formula_from_smiles)
 
-        # --- 5. POST-PROCESSING ---
+        # --- 6. POST-PROCESSING ---
         df_final = df.dropna(subset=['Annotated']).copy()
         st.write(f"🌍 Fetching NPClassifier & calculating mass for {len(df_final)} features...")
         
