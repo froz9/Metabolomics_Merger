@@ -48,69 +48,42 @@ def get_accurate_mass_robust(formula, adduct):
     if pd.isna(formula) or pd.isna(adduct) or formula == "": return np.nan
     try:
         M = molmass.Formula(formula).isotope.mass
-        
-        # Constants
         proton = 1.007276466
         na = 22.98976928
         k = 38.96370668
         nh4 = 18.03858
         
-        # Standardized Adduct Map: (Multiplier, Mass Addition, Charge State)
-        # Handles both 'M+H' and '[M+H]+' styles by normalizing input first if needed,
-        # or just exhaustive listing for safety.
         adduct_rules = {
-            # --- POSITIVE MODE ---
-            "M+H": (1, proton, 1),
-            "[M+H]+": (1, proton, 1),
-            "M+Na": (1, na, 1),
-            "[M+Na]+": (1, na, 1),
-            "M+K": (1, k, 1),
-            "[M+K]+": (1, k, 1),
-            "M+NH4": (1, nh4, 1),
-            "[M+NH4]+": (1, nh4, 1),
-            "M+2H": (1, 2 * proton, 2),
-            "[M+2H]2+": (1, 2 * proton, 2),
-            "M+H-H2O": (1, proton - 18.010565, 1),
-            "[M+H-H2O]+": (1, proton - 18.010565, 1),
-            "M-H2O+H": (1, proton - 18.010565, 1), # Common variant
-            "2M+H": (2, proton, 1),
-            "[2M+H]+": (2, proton, 1),
-            "2M+Na": (2, na, 1),
-            "[2M+Na]+": (2, na, 1),
-            
-            # --- NEGATIVE MODE ---
-            "M-H": (1, -proton, 1),
-            "[M-H]-": (1, -proton, 1),
-            "M+Cl": (1, 34.968853, 1),
-            "[M+Cl]-": (1, 34.968853, 1),
-            "M+FA-H": (1, 44.998201, 1), # Formic Acid
-            "[M+FA-H]-": (1, 44.998201, 1),
-            "2M-H": (2, -proton, 1),
-            "[2M-H]-": (2, -proton, 1),
+            "M+H": (1, proton, 1), "[M+H]+": (1, proton, 1),
+            "M+Na": (1, na, 1), "[M+Na]+": (1, na, 1),
+            "M+K": (1, k, 1), "[M+K]+": (1, k, 1),
+            "M+NH4": (1, nh4, 1), "[M+NH4]+": (1, nh4, 1),
+            "M+2H": (1, 2 * proton, 2), "[M+2H]2+": (1, 2 * proton, 2),
+            "M+H-H2O": (1, proton - 18.010565, 1), "[M+H-H2O]+": (1, proton - 18.010565, 1),
+            "M-H2O+H": (1, proton - 18.010565, 1),
+            "2M+H": (2, proton, 1), "[2M+H]+": (2, proton, 1),
+            "2M+Na": (2, na, 1), "[2M+Na]+": (2, na, 1),
+            "M-H": (1, -proton, 1), "[M-H]-": (1, -proton, 1),
+            "M+Cl": (1, 34.968853, 1), "[M+Cl]-": (1, 34.968853, 1),
+            "M+FA-H": (1, 44.998201, 1), "[M+FA-H]-": (1, 44.998201, 1),
+            "2M-H": (2, -proton, 1), "[2M-H]-": (2, -proton, 1),
         }
 
-        # Clean input to match keys if slight variations exist
         adduct_clean = str(adduct).strip()
-        
         if adduct_clean in adduct_rules:
             mult, add, charge = adduct_rules[adduct_clean]
             return (mult * M + add) / abs(charge)
         
-        # Fallback: try stripping brackets if exact match failed
         norm = adduct_clean.replace("[", "").replace("]", "")
         if norm.endswith("+") or norm.endswith("-"): norm = norm[:-1]
-        
         if norm in adduct_rules:
              mult, add, charge = adduct_rules[norm]
              return (mult * M + add) / abs(charge)
-             
         return np.nan
-            
     except: return np.nan
 
 def get_halogen_boron(formula):
     if pd.isna(formula): return np.nan
-    # Uses regex to ensure we don't match 'Br' when looking for 'B'
     has_b = bool(re.search(r'B(?![a-z])', formula)) 
     has_halo = bool(re.search(r'(F|Cl|Br|I|At)(?![a-z])', formula))
     if has_b and has_halo: return "Both"
@@ -165,8 +138,6 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         if '#Scan#' in fbmn.columns: fbmn = fbmn.rename(columns={'#Scan#': 'row.ID'})
         elif 'Scan' in fbmn.columns: fbmn = fbmn.rename(columns={'Scan': 'row.ID'})
         fbmn['row.ID'] = fbmn['row.ID'].astype(str)
-        
-        # Normalize common FBMN adducts to standard format
         adduct_map = {"M+H":"[M+H]+", "M+2H":"[M+2H]2+", "M+Na":"[M+Na]+", "M+NH4":"[M+NH4]+", "M-H2O+H":"[M+H-H2O]+", "M+K":"[M+K]+"}
         if 'Adduct' in fbmn.columns: fbmn['Adduct'] = fbmn['Adduct'].replace(adduct_map)
 
@@ -217,6 +188,7 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
             df['NPC#pathway_sirius'].notna()
         ]
         
+        # FIX: Use default=None for all string outputs to avoid TypeError
         df['Annotated'] = np.select(conds, [
             "GNPS/Spectral Match", "Consensus (molD + Sirius)", "molDiscovery (>600 Da)",
             "Sirius/CSI:FingerID (<=600 Da)", "Dereplicator+", "molDiscovery (fallback)",
@@ -232,9 +204,9 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
             df['Score_mold'].astype(str) + " (FDR:" + df['FDR_mold'].astype(str) + ")",
             df['ConfidenceScoreExact_sirius'].astype(str),
             "Class/Formula Predicted"
-        ], default=np.nan)
+        ], default=None)
 
-        df['MSI_level'] = np.select(conds, ["2", "3", "3", "3", "3", "3", "3", "Chemical class predicted & Molecular formula predicted"], default=np.nan)
+        df['MSI_level'] = np.select(conds, ["2", "3", "3", "3", "3", "3", "3", "Chemical class predicted & Molecular formula predicted"], default=None)
         df['Final_Name'] = np.select(conds, [df['Compound_Name'], df['Name_mold'], df['Name_mold'], df['name_sirius'], df['Name_derep'], df['Name_mold'], df['name_sirius'], "MolecularFormula_Class_predicted"], default=None)
         df['Final_SMILES'] = np.select(conds, [df['Smiles'], df['SMILES_mold'], df['SMILES_mold'], df['smiles_sirius'], df['SMILES_derep'], df['SMILES_mold'], df['smiles_sirius'], None], default=None)
         df['Final_Adduct'] = np.select(conds, [df['Adduct'], df['Adduct_mold'], df['Adduct_mold'], df['adduct.y_sirius'], df['Adduct_derep'], df['Adduct_mold'], df['adduct.y_sirius'], df['adduct.x_sirius']], default=None)
