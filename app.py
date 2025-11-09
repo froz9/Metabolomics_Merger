@@ -12,11 +12,55 @@ import re
 # ===================================================================
 st.set_page_config(page_title="Metabolomics Tiered Merger", layout="wide", page_icon="🧬")
 
+# --- DEFAULT ADDUCTS (High-precision standard values) ---
+DEFAULT_ADDUCTS = {
+    # Format: "Name": (Multiplier, Mass_Add, Charge)
+    "[M+H]+": (1, 1.007276, 1), "M+H": (1, 1.007276, 1),
+    "[M+Na]+": (1, 22.989769, 1), "M+Na": (1, 22.989769, 1),
+    "[M+NH4]+": (1, 18.03858, 1), "M+NH4": (1, 18.03858, 1),
+    "[M+K]+": (1, 38.963707, 1), "M+K": (1, 38.963707, 1),
+    "[M+2H]2+": (1, 2.014552, 2), "M+2H": (1, 2.014552, 2),
+    "[2M+H]+": (2, 1.007276, 1), "2M+H": (2, 1.007276, 1),
+    "[2M+Na]+": (2, 22.989769, 1), "2M+Na": (2, 22.989769, 1),
+    "[M-H]-": (1, -1.007276, -1), "M-H": (1, -1.007276, -1),
+    "[M+Cl]-": (1, 34.968853, -1), "M+Cl": (1, 34.968853, -1),
+    "[M+FA-H]-": (1, 44.998201, -1), "M+FA-H": (1, 44.998201, -1)
+}
+
+def parse_msac_adduct(adduct_str):
+    """
+    Parses MSAC-style strings like '2M+ClO3' or 'M-H2O+H' into (multiplier, added_mass).
+    Uses molmass for dynamic calculation of the additive part.
+    """
+    try:
+        # 1. Extract Multiplier (e.g., '2' from '2M...')
+        multi_match = re.match(r"^(\d*)M", adduct_str)
+        mult = float(multi_match.group(1)) if multi_match and multi_match.group(1) else 1.0
+        
+        # 2. Extract Additions/Losses (e.g., '+ClO3', '-H2O', '+H')
+        # This finds all occurrences of +Formula or -Formula
+        additions = re.findall(r"([+-][A-Za-z0-9]+)", adduct_str.replace(multi_match.group(0), ""))
+        
+        total_added_mass = 0.0
+        for add in additions:
+            sign = 1.0 if add.startswith('+') else -1.0
+            formula = add[1:] # Remove sign
+            # Use molmass to get exact isotope mass of the fragment
+            mass = molmass.Formula(formula).isotope.mass
+            total_added_mass += sign * mass
+            
+        return mult, total_added_mass
+    except:
+        return 1.0, 0.0 # Fallback if parsing fails completely
+
 def get_formula_from_smiles(smiles):
+    """Calculates formula from SMILES, ensuring explicit H for accuracy."""
     try:
         if pd.isna(smiles) or smiles == "": return None
         mol = Chem.MolFromSmiles(smiles)
-        if mol: return rdMolDescriptors.CalcMolFormula(mol)
+        if mol:
+            mol = Chem.AddHs(mol) # CRITICAL for accurate H counts
+            return rdMolDescriptors.CalcMolFormula(mol)
         return None
     except: return None
 
@@ -40,45 +84,24 @@ def calculate_tanimoto(smiles1, smiles2):
         return np.nan
     except: return np.nan
 
-def get_accurate_mass_robust(formula, adduct):
-    """
-    Calculates accurate m/z using a standardized adduct dictionary.
-    Handles inputs with/without brackets and explicit charges.
-    """
+def get_accurate_mass_custom(formula, adduct, adduct_rules):
     if pd.isna(formula) or pd.isna(adduct) or formula == "": return np.nan
     try:
         M = molmass.Formula(formula).isotope.mass
-        proton = 1.007276466
-        na = 22.98976928
-        k = 38.96370668
-        nh4 = 18.03858
-        
-        adduct_rules = {
-            "M+H": (1, proton, 1), "[M+H]+": (1, proton, 1),
-            "M+Na": (1, na, 1), "[M+Na]+": (1, na, 1),
-            "M+K": (1, k, 1), "[M+K]+": (1, k, 1),
-            "M+NH4": (1, nh4, 1), "[M+NH4]+": (1, nh4, 1),
-            "M+2H": (1, 2 * proton, 2), "[M+2H]2+": (1, 2 * proton, 2),
-            "M+H-H2O": (1, proton - 18.010565, 1), "[M+H-H2O]+": (1, proton - 18.010565, 1),
-            "M-H2O+H": (1, proton - 18.010565, 1),
-            "2M+H": (2, proton, 1), "[2M+H]+": (2, proton, 1),
-            "2M+Na": (2, na, 1), "[2M+Na]+": (2, na, 1),
-            "M-H": (1, -proton, 1), "[M-H]-": (1, -proton, 1),
-            "M+Cl": (1, 34.968853, 1), "[M+Cl]-": (1, 34.968853, 1),
-            "M+FA-H": (1, 44.998201, 1), "[M+FA-H]-": (1, 44.998201, 1),
-            "2M-H": (2, -proton, 1), "[2M-H]-": (2, -proton, 1),
-        }
-
         adduct_clean = str(adduct).strip()
+        
+        # 1. Exact match in rules
         if adduct_clean in adduct_rules:
             mult, add, charge = adduct_rules[adduct_clean]
             return (mult * M + add) / abs(charge)
         
+        # 2. Fallback: Strip brackets and try again
         norm = adduct_clean.replace("[", "").replace("]", "")
         if norm.endswith("+") or norm.endswith("-"): norm = norm[:-1]
         if norm in adduct_rules:
              mult, add, charge = adduct_rules[norm]
              return (mult * M + add) / abs(charge)
+             
         return np.nan
     except: return np.nan
 
@@ -117,6 +140,9 @@ with st.expander("📁 File Uploads", expanded=True):
     sirius_file = c1.file_uploader("SIRIUS Results (.csv)", type=['csv', 'txt'])
     moldisc_file = c2.file_uploader("MolDiscovery (.tsv)", type=['tsv', 'txt'])
     derep_file = c2.file_uploader("Dereplicator+ (.tsv)", type=['tsv', 'txt'])
+    
+    st.markdown("---")
+    adduct_file = st.file_uploader("Adducts List (.csv) [Optional]", type=['csv'], help="Supports MSAC format: 'adduct', 'charge', ('percent_coverage' ignored)")
 
 # ===================================================================
 # 3. PIPELINE LOGIC
@@ -127,7 +153,33 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         st.stop()
 
     with st.status("🔄 Processing...", expanded=True) as status:
-        # --- LOAD ---
+        # --- 0. LOAD & PARSE ADDUCTS ---
+        ADDUCT_RULES = DEFAULT_ADDUCTS.copy()
+        if adduct_file:
+            st.write("⚙️ Parsing custom adduct list...")
+            try:
+                cust = pd.read_csv(adduct_file)
+                cust.columns = [c.lower().strip() for c in cust.columns]
+                
+                for _, row in cust.iterrows():
+                    name = str(row.get('adduct', '')).strip()
+                    if not name: continue
+                    
+                    charge = float(row.get('charge', 1.0))
+                    
+                    # Try explicit columns first (highest precision if provided)
+                    if 'mass_multi' in row and 'mass_add' in row:
+                        mult = float(row['mass_multi'])
+                        add = float(row['mass_add'])
+                    else:
+                        # Fallback to MSAC string parsing (e.g., "2M+ClO3")
+                        mult, add = parse_msac_adduct(name)
+                        
+                    ADDUCT_RULES[name] = (mult, add, charge)
+            except Exception as e:
+                st.warning(f"Error parsing adduct file: {e}. Using defaults for failed rows.")
+
+        # --- 1. LOAD DATA ---
         st.write("📝 Loading data...")
         ms1 = pd.read_csv(ms1_file)
         ms1 = ms1.rename(columns={'cluster index': 'row.ID', 'precursor mass': 'row.m.z', 'RTMean': 'row.retention.time'})
@@ -138,6 +190,7 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         if '#Scan#' in fbmn.columns: fbmn = fbmn.rename(columns={'#Scan#': 'row.ID'})
         elif 'Scan' in fbmn.columns: fbmn = fbmn.rename(columns={'Scan': 'row.ID'})
         fbmn['row.ID'] = fbmn['row.ID'].astype(str)
+        
         adduct_map = {"M+H":"[M+H]+", "M+2H":"[M+2H]2+", "M+Na":"[M+Na]+", "M+NH4":"[M+NH4]+", "M-H2O+H":"[M+H-H2O]+", "M+K":"[M+K]+"}
         if 'Adduct' in fbmn.columns: fbmn['Adduct'] = fbmn['Adduct'].replace(adduct_map)
 
@@ -156,21 +209,21 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
              sirius['row.ID'] = sirius['row.ID'].astype(str)
         else: sirius = pd.DataFrame(columns=['row.ID'])
 
-        # --- MERGE ---
+        # --- 2. MERGE ---
         st.write("🔗 Merging tables...")
         df = pd.merge(fbmn, ms1, on='row.ID', how='outer')
         if not mold.empty: df = pd.merge(df, mold, on='row.ID', how='left')
         if not derep.empty: df = pd.merge(df, derep, on='row.ID', how='left')
         if not sirius.empty: df = pd.merge(df, sirius, on='row.ID', how='left')
 
-        # --- SAFEGUARDS ---
+        # --- 3. SAFEGUARDS ---
         req_cols = ['MQScore', 'FDR_mold', 'Score_mold', 'ConfidenceScoreExact_sirius', 'row.m.z', 'FDR_derep', 'Score_derep', 'NPC#pathway_sirius', 'Compound_Name', 'Name_mold', 'name_sirius', 'Name_derep', 'Smiles', 'SMILES_mold', 'smiles_sirius', 'SMILES_derep', 'Adduct', 'Adduct_mold', 'adduct.y_sirius', 'Adduct_derep', 'adduct.x_sirius', 'molecularFormula.y_sirius', 'molecularFormula.x_sirius', 'InChIKey', 'InChIkey2D_sirius']
         for col in req_cols:
             if col not in df.columns: df[col] = np.nan
         for col in ['MQScore', 'FDR_mold', 'ConfidenceScoreExact_sirius', 'row.m.z', 'FDR_derep']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        # --- TIERED LOGIC ---
+        # --- 4. TIERED LOGIC ---
         st.write("🧪 Applying annotation rules...")
         df['Tanimoto_molD_Sirius'] = np.nan
         mask_calc = df['SMILES_mold'].notna() & df['smiles_sirius'].notna()
@@ -188,7 +241,6 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
             df['NPC#pathway_sirius'].notna()
         ]
         
-        # FIX: Use default=None for all string outputs to avoid TypeError
         df['Annotated'] = np.select(conds, [
             "GNPS/Spectral Match", "Consensus (molD + Sirius)", "molDiscovery (>600 Da)",
             "Sirius/CSI:FingerID (<=600 Da)", "Dereplicator+", "molDiscovery (fallback)",
@@ -211,16 +263,18 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         df['Final_SMILES'] = np.select(conds, [df['Smiles'], df['SMILES_mold'], df['SMILES_mold'], df['smiles_sirius'], df['SMILES_derep'], df['SMILES_mold'], df['smiles_sirius'], None], default=None)
         df['Final_Adduct'] = np.select(conds, [df['Adduct'], df['Adduct_mold'], df['Adduct_mold'], df['adduct.y_sirius'], df['Adduct_derep'], df['Adduct_mold'], df['adduct.y_sirius'], df['adduct.x_sirius']], default=None)
         df['Final_InChIKey'] = np.select(conds, [df['InChIKey'], None, None, df['InChIkey2D_sirius'], None, None, df['InChIkey2D_sirius'], None], default=None)
-        df['Final_Formula'] = np.select([conds[3] | conds[6], conds[7]], [df['molecularFormula.y_sirius'], df['molecularFormula.x_sirius']], default=None)
         
-        mask_form = df['Final_Formula'].isna() & df['Final_SMILES'].notna()
-        if mask_form.any(): df.loc[mask_form, 'Final_Formula'] = df[mask_form]['Final_SMILES'].apply(get_formula_from_smiles)
+        # --- 5. FORMULA FIX (PRIORITIZE SMILES) ---
+        df['Final_Formula'] = np.select([conds[3] | conds[6], conds[7]], [df['molecularFormula.y_sirius'], df['molecularFormula.x_sirius']], default=None)
+        mask_smiles = df['Final_SMILES'].notna()
+        if mask_smiles.any():
+             df.loc[mask_smiles, 'Final_Formula'] = df[mask_smiles]['Final_SMILES'].apply(get_formula_from_smiles)
 
-        # --- POST-PROCESSING ---
+        # --- 6. POST-PROCESSING ---
         df_final = df.dropna(subset=['Annotated']).copy()
         st.write(f"🌍 Fetching NPClassifier & calculating mass for {len(df_final)} features...")
         
-        df_final['Accurate.mass'] = df_final.apply(lambda x: get_accurate_mass_robust(x.get('Final_Formula'), x.get('Final_Adduct')), axis=1)
+        df_final['Accurate.mass'] = df_final.apply(lambda x: get_accurate_mass_custom(x.get('Final_Formula'), x.get('Final_Adduct'), ADDUCT_RULES), axis=1)
         df_final['accuracy'] = ((df_final['row.m.z'] - df_final['Accurate.mass']) / df_final['Accurate.mass']) * 1e6
         df_final['halogen_boron'] = df_final['Final_Formula'].apply(get_halogen_boron)
 
