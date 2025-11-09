@@ -12,7 +12,7 @@ import os
 # 1. CONFIG & HELPER FUNCTIONS
 # ===================================================================
 st.set_page_config(page_title="Metabolomics Tiered Merger", 
-    layout="centered", 
+    layout="wide", 
     page_icon="🦠🧪",
      menu_items={
     'Report a bug': "mailto:f9.alan@gmail.com",
@@ -22,7 +22,7 @@ st.set_page_config(page_title="Metabolomics Tiered Merger",
 st.title("Metabolomics Tiered Merger")
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
-    st.image("logo_L125.png")
+    st.image("logo_L125.png", width = 300)
 
 st.markdown("---")
 st.write("Lab 125, Chemistry Faculty, UNAM, MX")
