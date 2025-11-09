@@ -6,15 +6,15 @@ from rdkit.Chem import rdMolDescriptors, AllChem, DataStructs
 import requests
 import molmass
 import re
+import os
 
 # ===================================================================
 # 1. CONFIG & HELPER FUNCTIONS
 # ===================================================================
 st.set_page_config(page_title="Metabolomics Tiered Merger", layout="wide", page_icon="🧬")
 
-# --- DEFAULT ADDUCTS (High-precision standard values) ---
+# --- DEFAULT ADDUCTS (Fallback if no 'adducts.csv' is found) ---
 DEFAULT_ADDUCTS = {
-    # Format: "Name": (Multiplier, Mass_Add, Charge)
     "[M+H]+": (1, 1.007276, 1), "M+H": (1, 1.007276, 1),
     "[M+Na]+": (1, 22.989769, 1), "M+Na": (1, 22.989769, 1),
     "[M+NH4]+": (1, 18.03858, 1), "M+NH4": (1, 18.03858, 1),
@@ -28,39 +28,43 @@ DEFAULT_ADDUCTS = {
 }
 
 def parse_msac_adduct(adduct_str):
-    """
-    Parses MSAC-style strings like '2M+ClO3' or 'M-H2O+H' into (multiplier, added_mass).
-    Uses molmass for dynamic calculation of the additive part.
-    """
+    """Parses MSAC-style strings like '2M+ClO3' into multiplier and added mass."""
     try:
-        # 1. Extract Multiplier (e.g., '2' from '2M...')
         multi_match = re.match(r"^(\d*)M", adduct_str)
         mult = float(multi_match.group(1)) if multi_match and multi_match.group(1) else 1.0
-        
-        # 2. Extract Additions/Losses (e.g., '+ClO3', '-H2O', '+H')
-        # This finds all occurrences of +Formula or -Formula
         additions = re.findall(r"([+-][A-Za-z0-9]+)", adduct_str.replace(multi_match.group(0), ""))
-        
         total_added_mass = 0.0
         for add in additions:
             sign = 1.0 if add.startswith('+') else -1.0
-            formula = add[1:] # Remove sign
-            # Use molmass to get exact isotope mass of the fragment
-            mass = molmass.Formula(formula).isotope.mass
-            total_added_mass += sign * mass
-            
+            total_added_mass += sign * molmass.Formula(add[1:]).isotope.mass
         return mult, total_added_mass
-    except:
-        return 1.0, 0.0 # Fallback if parsing fails completely
+    except: return 1.0, 0.0
+
+def load_local_adducts():
+    """Loads 'adducts.csv' from the local directory if it exists."""
+    rules = DEFAULT_ADDUCTS.copy()
+    if os.path.exists("adducts.csv"):
+        try:
+            df = pd.read_csv("adducts.csv")
+            df.columns = [c.lower().strip() for c in df.columns]
+            for _, row in df.iterrows():
+                name = str(row.get('adduct', '')).strip()
+                if not name: continue
+                charge = float(row.get('charge', 1.0))
+                # Prefer explicit columns if available, else parse string
+                if 'mass_multi' in row and 'mass_add' in row:
+                    mult, add = float(row['mass_multi']), float(row['mass_add'])
+                else:
+                    mult, add = parse_msac_adduct(name)
+                rules[name] = (mult, add, charge)
+        except: pass # Silently fail back to defaults if CSV is malformed
+    return rules
 
 def get_formula_from_smiles(smiles):
-    """Calculates formula from SMILES, ensuring explicit H for accuracy."""
     try:
         if pd.isna(smiles) or smiles == "": return None
         mol = Chem.MolFromSmiles(smiles)
-        if mol:
-            mol = Chem.AddHs(mol) # CRITICAL for accurate H counts
-            return rdMolDescriptors.CalcMolFormula(mol)
+        if mol: return rdMolDescriptors.CalcMolFormula(Chem.AddHs(mol))
         return None
     except: return None
 
@@ -89,19 +93,14 @@ def get_accurate_mass_custom(formula, adduct, adduct_rules):
     try:
         M = molmass.Formula(formula).isotope.mass
         adduct_clean = str(adduct).strip()
-        
-        # 1. Exact match in rules
         if adduct_clean in adduct_rules:
             mult, add, charge = adduct_rules[adduct_clean]
             return (mult * M + add) / abs(charge)
-        
-        # 2. Fallback: Strip brackets and try again
         norm = adduct_clean.replace("[", "").replace("]", "")
         if norm.endswith("+") or norm.endswith("-"): norm = norm[:-1]
         if norm in adduct_rules:
              mult, add, charge = adduct_rules[norm]
              return (mult * M + add) / abs(charge)
-             
         return np.nan
     except: return np.nan
 
@@ -140,9 +139,6 @@ with st.expander("📁 File Uploads", expanded=True):
     sirius_file = c1.file_uploader("SIRIUS Results (.csv)", type=['csv', 'txt'])
     moldisc_file = c2.file_uploader("MolDiscovery (.tsv)", type=['tsv', 'txt'])
     derep_file = c2.file_uploader("Dereplicator+ (.tsv)", type=['tsv', 'txt'])
-    
-    st.markdown("---")
-    adduct_file = st.file_uploader("Adducts List (.csv) [Optional]", type=['csv'], help="Supports MSAC format: 'adduct', 'charge', ('percent_coverage' ignored)")
 
 # ===================================================================
 # 3. PIPELINE LOGIC
@@ -153,31 +149,8 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         st.stop()
 
     with st.status("🔄 Processing...", expanded=True) as status:
-        # --- 0. LOAD & PARSE ADDUCTS ---
-        ADDUCT_RULES = DEFAULT_ADDUCTS.copy()
-        if adduct_file:
-            st.write("⚙️ Parsing custom adduct list...")
-            try:
-                cust = pd.read_csv(adduct_file)
-                cust.columns = [c.lower().strip() for c in cust.columns]
-                
-                for _, row in cust.iterrows():
-                    name = str(row.get('adduct', '')).strip()
-                    if not name: continue
-                    
-                    charge = float(row.get('charge', 1.0))
-                    
-                    # Try explicit columns first (highest precision if provided)
-                    if 'mass_multi' in row and 'mass_add' in row:
-                        mult = float(row['mass_multi'])
-                        add = float(row['mass_add'])
-                    else:
-                        # Fallback to MSAC string parsing (e.g., "2M+ClO3")
-                        mult, add = parse_msac_adduct(name)
-                        
-                    ADDUCT_RULES[name] = (mult, add, charge)
-            except Exception as e:
-                st.warning(f"Error parsing adduct file: {e}. Using defaults for failed rows.")
+        # --- 0. LOAD INTERNAL ADDUCTS ---
+        ADDUCT_RULES = load_local_adducts()
 
         # --- 1. LOAD DATA ---
         st.write("📝 Loading data...")
@@ -190,7 +163,6 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         if '#Scan#' in fbmn.columns: fbmn = fbmn.rename(columns={'#Scan#': 'row.ID'})
         elif 'Scan' in fbmn.columns: fbmn = fbmn.rename(columns={'Scan': 'row.ID'})
         fbmn['row.ID'] = fbmn['row.ID'].astype(str)
-        
         adduct_map = {"M+H":"[M+H]+", "M+2H":"[M+2H]2+", "M+Na":"[M+Na]+", "M+NH4":"[M+NH4]+", "M-H2O+H":"[M+H-H2O]+", "M+K":"[M+K]+"}
         if 'Adduct' in fbmn.columns: fbmn['Adduct'] = fbmn['Adduct'].replace(adduct_map)
 
@@ -264,13 +236,12 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
         df['Final_Adduct'] = np.select(conds, [df['Adduct'], df['Adduct_mold'], df['Adduct_mold'], df['adduct.y_sirius'], df['Adduct_derep'], df['Adduct_mold'], df['adduct.y_sirius'], df['adduct.x_sirius']], default=None)
         df['Final_InChIKey'] = np.select(conds, [df['InChIKey'], None, None, df['InChIkey2D_sirius'], None, None, df['InChIkey2D_sirius'], None], default=None)
         
-        # --- 5. FORMULA FIX (PRIORITIZE SMILES) ---
         df['Final_Formula'] = np.select([conds[3] | conds[6], conds[7]], [df['molecularFormula.y_sirius'], df['molecularFormula.x_sirius']], default=None)
         mask_smiles = df['Final_SMILES'].notna()
         if mask_smiles.any():
              df.loc[mask_smiles, 'Final_Formula'] = df[mask_smiles]['Final_SMILES'].apply(get_formula_from_smiles)
 
-        # --- 6. POST-PROCESSING ---
+        # --- 5. POST-PROCESSING ---
         df_final = df.dropna(subset=['Annotated']).copy()
         st.write(f"🌍 Fetching NPClassifier & calculating mass for {len(df_final)} features...")
         
