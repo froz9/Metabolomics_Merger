@@ -296,7 +296,7 @@ if st.button("🚀 Run Merging Pipeline", type="primary"):
     
     # 2. Main Annotated Output
     st.subheader("🧩 Final Annotated Features")
-    r_columns = ['row.ID', 'Final_Name', 'NPCPathway', 'NPCSuperclass', 'NPCClass', 'Annotated', 'Score_value', 'Final_Formula', 'Final_Adduct', 'row.m.z', 'Accurate.mass', 'accuracy', 'row.retention.time', 'MSI_level', 'halogen_boron', 'Final_SMILES', 'Final_InChIKey']
+    r_columns = ['row.ID', 'Final_Name', 'NPCPathway', 'NPCSuperclass', 'NPCClass', 'Annotated', 'Score_value', 'Final_Formula', 'Final_Adduct', 'row.m.z', 'Accurate.mass', 'accuracy', 'row.retention.time', 'MSI_level', 'halogen_boron', 'Final_SMILES', 'Final_InChIKey', 'Tanimoto_molD_Sirius']
     final_df = df_final[[c for c in r_columns if c in df_final.columns]]
     st.dataframe(final_df.head(50), use_container_width=True)
 
