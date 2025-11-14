@@ -16,7 +16,7 @@ st.set_page_config(
     layout="wide", 
     page_icon="⚗️",
     menu_items={
-        'Report a bug': "mailto:your_email@example.com",
+        'Report a bug': "mailto:f9.alan@gmail.com",
         'About': "# Tiered merging tool for FBMN, SIRIUS, MolDiscovery, and Dereplicator+."
     }
 )
